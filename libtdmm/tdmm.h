@@ -7,6 +7,8 @@ typedef enum {
   FIRST_FIT,
   BEST_FIT,
   WORST_FIT,
+  BUDDY,
+  MIXED
 } alloc_strat_e;
 
 typedef struct sec {

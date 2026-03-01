@@ -9,6 +9,11 @@
 #include <unistd.h>
 
 #define MIN getpagesize()
+#define MAX_ORDER 30
+#define MIN_ORDER 12 // page size = min
+
+//buddy free list, organize by block size
+sec *buddyLists[MAX_ORDER + 1];
 
 sec *frH = NULL;    // free head
 sec *allocH = NULL; // allocated head
@@ -23,6 +28,8 @@ size_t totAlloc = 0;
 size_t totOh = 0;
 double utilSum = 0;
 size_t utilCount = 0;
+
+int mixCount = 0;
 
 // get ptr to tag at end of block
 size_t *tag(sec *s) { return (size_t *)((char *)(s + 1) + s->size); }
@@ -43,18 +50,23 @@ void t_init(alloc_strat_e pol) {
     mSize = 0;
     frH = NULL;
     allocH = NULL;
-
     currPol = pol;
-
     totMap = 0;
     totAlloc = 0;
     totOh = 0;
     utilSum = 0;
     utilCount = 0;
+    mixCount = 0;
+
+    if (currPol == BUDDY) {
+        for (int i = 0; i <= MAX_ORDER; i++)
+            buddyLists[i] = NULL;
+        return;
+    }
 
     // map new heap
     size_t pgSize = MIN;
-    //allocate less initially to improve memory utilization
+    // allocate less initially to improve memory utilization
     size_t requested = pgSize;
 
     mSize = ((requested + pgSize - 1) / pgSize) * pgSize;
@@ -76,9 +88,7 @@ void t_init(alloc_strat_e pol) {
     frH->p = NULL;
 
     setTag(frH);
-
     allocH = NULL;
-
     totMap = mSize;
 }
 
@@ -137,7 +147,7 @@ sec *allocMore(size_t size) {
     size_t needed = size + sizeof(sec) + sizeof(size_t);
     size_t reqSize = ((needed + pgSize - 1) / pgSize) * pgSize;
 
-    //prevent repeated calls
+    // prevent repeated calls
     if (reqSize < MIN)
         reqSize = MIN;
 
@@ -164,6 +174,75 @@ sec *allocMore(size_t size) {
     insert(&frH, newBlock);
     return newBlock;
 }
+
+// BUDDY HELPERS
+
+// get smallest power-of-2 that's enough
+int orderSize(size_t size) {
+    size_t total = size + sizeof(sec);
+    int order = MIN_ORDER;
+
+    while (((size_t)1 << order) < total)
+        order++;
+
+    return order;
+}
+
+// insert into buddy list
+void buddyInsert(sec *block, int order) {
+    block->free = 1;
+    block->size = ((size_t)1 << order) - sizeof(sec);
+    block->n = buddyLists[order];
+    block->p = NULL;
+
+    if (buddyLists[order])
+        buddyLists[order]->p = block;
+
+    buddyLists[order] = block;
+}
+
+// remove from buddy list
+void buddyRemove(sec *block, int order) {
+    if (block->p)
+        block->p->n = block->n;
+    else
+        buddyLists[order] = block->n;
+
+    if (block->n)
+        block->n->p = block->p;
+
+    block->n = block->p = NULL;
+}
+
+// find buddy address using XOR
+sec *getBuddy(sec *block, int order)
+{
+    size_t blockSize = (size_t)1 << order;
+    size_t addr = (size_t)block;
+    size_t buddyAddr = addr ^ blockSize;
+    return (sec *)buddyAddr;
+}
+
+sec *allocMoreBuddy(int order) {
+    size_t blockSize = (size_t)1 << order;
+
+    void *newMem = mmap(NULL, blockSize, PROT_READ | PROT_WRITE,
+                        MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+
+    if (newMem == MAP_FAILED) {
+        fprintf(stderr, "buddy mmap failed");
+        exit(1);
+    }
+
+    sec *block = (sec *)newMem;
+    block->free = 0;
+    block->size = blockSize - sizeof(sec);
+    totMap += blockSize;
+
+    return block;
+}
+
+// END OF BUDDY HELPERS
 
 sec *findFirst(size_t size) {
     sec *search = frH;
@@ -222,6 +301,34 @@ sec *findWorst(size_t size) {
         worst = allocMore(size);
     }
     return worst;
+}
+
+sec *findBuddy(size_t size) {
+    int order = orderSize(size);
+    int current = order;
+
+    while (current <= MAX_ORDER && buddyLists[current] == NULL)
+        current++;
+
+    if (current > MAX_ORDER) {
+        return allocMoreBuddy(order);
+    }
+
+    sec *block = buddyLists[current];
+    buddyRemove(block, current);
+
+    // split until desired order
+    while (current > order) {
+        current--;
+        size_t splitSize = (size_t)1 << current;
+        sec *buddy = (sec *)((char *)block + splitSize);
+        buddy->free = 1;
+        buddyInsert(buddy, current);
+    }
+
+    block->free = 0;
+    block->size = ((size_t)1 << order) - sizeof(sec);
+    return block;
 }
 
 void split(sec *s, size_t aligned) {
@@ -293,6 +400,29 @@ void *t_malloc(size_t size) {
         found = findBest(aligned);
     } else if (currPol == WORST_FIT) {
         found = findWorst(aligned);
+    } else if (currPol == BUDDY) {
+
+        found = findBuddy(aligned);
+        if (!found)
+            return NULL;
+        insert(&allocH, found);
+        totAlloc += found->size;
+        totOh += sizeof(sec);
+        utilSum += (double)totAlloc / totMap;
+        utilCount++;
+        return (void *)(found + 1);
+
+    } else if (currPol == MIXED) {
+        if (mixCount == 0) {
+            mixCount++;
+            found = findFirst(aligned);
+        } else if (mixCount == 1) {
+            mixCount++;
+            found = findBest(aligned);
+        } else {
+            mixCount = 0;
+            found = findWorst(aligned);
+        }
     } else {
         fprintf(stderr, "policy undefined");
         exit(1);
@@ -360,6 +490,31 @@ sec *merge(sec *s) {
 void t_free(void *ptr) {
     if (!ptr)
         return;
+
+    if (currPol == BUDDY) {
+        sec *block = (sec *)ptr - 1;
+        detach(&allocH, block);
+        block->free = 1;
+
+        totAlloc -= block->size;
+        totOh -= sizeof(sec);
+        utilSum += (double)totAlloc / totMap;
+        utilCount++;
+
+        int order = orderSize(block->size);
+
+        while (order < MAX_ORDER) {
+            sec *buddy = getBuddy(block, order);
+            if (!buddy || !buddy->free)
+                break;
+            buddyRemove(buddy, order);
+            if (buddy < block)
+                block = buddy;
+            order++;
+        }
+        buddyInsert(block, order);
+        return;
+    }
 
     sec *block = (sec *)ptr - 1;
 
