@@ -1,0 +1,10 @@
+# Prog7Allocator+
+Allocator extended to include buddy allocation and mixed allocation.
+
+Name: Praseedha Maddipatla
+
+EID: psm2357
+
+To compile:./build.sh
+
+To run:./hw7
