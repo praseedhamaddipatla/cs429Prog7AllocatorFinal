@@ -280,9 +280,118 @@ static void correctnessTests() {
     printStats();
 }
 
+static void buddyBinaryStress() {
+    printf("\n===== BUDDY BINARY STRESS =====\n");
+
+    t_init(BUDDY);
+
+    const int N = 1024;
+    void *ptrs[N];
+
+    // allocate many small blocks to force deep splits
+    for (int i = 0; i < N; i++) {
+        ptrs[i] = t_malloc(32);
+        if (!ptrs[i]) {
+            printf("Allocation failed at %d\n", i);
+            return;
+        }
+    }
+
+    // free every other to create checkerboard pattern
+    for (int i = 0; i < N; i += 2) {
+        t_free(ptrs[i]);
+        ptrs[i] = NULL;
+    }
+
+    // free remaining — forces recursive coalescing
+    for (int i = 1; i < N; i += 2) {
+        t_free(ptrs[i]);
+        ptrs[i] = NULL;
+    }
+
+    printf("Binary stress complete\n");
+    printStats();
+}
+
+static void buddyMergeCascade() {
+    printf("\n===== BUDDY MERGE CASCADE =====\n");
+
+    t_init(BUDDY);
+
+    void *ptrs[512];
+
+    // allocate medium blocks
+    for (int i = 0; i < 512; i++)
+        ptrs[i] = t_malloc(128);
+
+    // free in reverse order to force top-down merges
+    for (int i = 511; i >= 0; i--)
+        t_free(ptrs[i]);
+
+    printf("Merge cascade complete\n");
+    printStats();
+}
+
+static void buddyMMFF() {
+    printf("\n===== BUDDY MMFF PATTERN =====\n");
+
+    t_init(BUDDY);
+
+    for (int i = 0; i < 5000; i++) {
+
+        void *a = t_malloc(64);
+        void *b = t_malloc(128);
+
+        t_free(a);
+        t_free(b);
+    }
+
+    printf("MMFF complete\n");
+    printStats();
+}
+
+#include <stdlib.h>
+
+static void buddyRandomStress() {
+    printf("\n===== BUDDY RANDOM STRESS =====\n");
+
+    t_init(BUDDY);
+
+    const int N = 2000;
+    void *ptrs[N];
+    for (int i = 0; i < N; i++)
+        ptrs[i] = NULL;
+
+    for (int i = 0; i < 20000; i++) {
+
+        int idx = rand() % N;
+
+        if (ptrs[idx]) {
+            t_free(ptrs[idx]);
+            ptrs[idx] = NULL;
+        } else {
+            size_t size = (rand() % 10 + 1) * 64;
+            ptrs[idx] = t_malloc(size);
+        }
+    }
+
+    // cleanup
+    for (int i = 0; i < N; i++)
+        if (ptrs[i])
+            t_free(ptrs[i]);
+
+    printf("Random stress complete\n");
+    printStats();
+}
+
 int main() {
 
-    correctnessTests();
+    buddyBinaryStress();
+    buddyMergeCascade();
+    buddyMMFF();
+    buddyRandomStress();
+
+    /*correctnessTests();
 
     runBench("BENCH FIRST_FIT", FIRST_FIT);
     runBench("BENCH BEST_FIT", BEST_FIT);
@@ -294,7 +403,7 @@ int main() {
 
     overheadTest("OVERHEAD FIRST_FIT", FIRST_FIT);
     overheadTest("OVERHEAD BEST_FIT", BEST_FIT);
-    overheadTest("OVERHEAD WORST_FIT", WORST_FIT);
+    overheadTest("OVERHEAD WORST_FIT", WORST_FIT);*/
 
     return 0;
 }

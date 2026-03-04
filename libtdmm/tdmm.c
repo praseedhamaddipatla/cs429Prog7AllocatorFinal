@@ -11,7 +11,7 @@
 #define MIN getpagesize()
 #define MAX_ORDER 30
 #define MIN_ORDER 12 // page size = min
-#define MAX_REGIONS 1024
+#define MAX_REGIONS 65536
 
 region regions[MAX_REGIONS];
 int regionCount = 0;
@@ -61,6 +61,7 @@ void t_init(alloc_strat_e pol) {
     utilSum = 0;
     utilCount = 0;
     mixCount = 0;
+    regionCount = 0;
 
     if (currPol == BUDDY) {
         for (int i = 0; i <= MAX_ORDER; i++)
@@ -350,6 +351,7 @@ sec *findBuddy(size_t size) {
         size_t splitSize = (size_t)1 << current;
         sec *buddy = (sec *)((char *)block + splitSize);
         buddy->free = 1;
+        buddy->size = ((size_t)1 << current) - sizeof(sec);
         buddy->n = buddy->p = NULL;
         buddyInsert(buddy, current);
     }
@@ -529,18 +531,22 @@ void t_free(void *ptr) {
         utilSum += (double)totAlloc / totMap;
         utilCount++;
 
-        int order = orderSize(block->size);
+        int order = MIN_ORDER;
+        while (order <= MAX_ORDER &&
+               ((size_t)1 << order) - sizeof(sec) != block->size)
+            order++;
+        if (order > MAX_ORDER) {
+            fprintf(stderr, "t_free: could not determine block order\n");
+            return;
+        }
 
         while (order < MAX_ORDER) {
             sec *buddy = getBuddy(block, order);
             if (!buddy)
                 break;
-
-            // buddy must be free
             if (!buddy->free)
                 break;
 
-            // buddy must actually be in this order list
             sec *check = buddyLists[order];
             int found = 0;
             while (check) {
@@ -553,19 +559,28 @@ void t_free(void *ptr) {
             if (!found)
                 break;
 
-            // remove buddy from its free list
             buddyRemove(buddy, order);
             buddy->free = 0;
 
-            // choose lower address as merged block
             if (buddy < block)
                 block = buddy;
+
             order++;
+            block->size = ((size_t)1 << order) - sizeof(sec);
         }
+
         buddyInsert(block, order);
+
+        region *r = findRegion(block);
+        if (r && (char *)block == r->start && ((size_t)1 << order) == r->size) {
+            buddyRemove(block, order);
+            totMap -= r->size;
+            munmap(r->start, r->size);
+            *r = regions[--regionCount]; // swap-remove
+        }
+
         return;
     }
-
     sec *block = (sec *)ptr - 1;
 
     // validate exists in alloc list
