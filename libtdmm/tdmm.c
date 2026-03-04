@@ -350,6 +350,7 @@ sec *findBuddy(size_t size) {
         size_t splitSize = (size_t)1 << current;
         sec *buddy = (sec *)((char *)block + splitSize);
         buddy->free = 1;
+        buddy->n = buddy->p = NULL;
         buddyInsert(buddy, current);
     }
 
@@ -534,10 +535,29 @@ void t_free(void *ptr) {
             sec *buddy = getBuddy(block, order);
             if (!buddy)
                 break;
+
+            // buddy must be free
             if (!buddy->free)
                 break;
 
+            // buddy must actually be in this order list
+            sec *check = buddyLists[order];
+            int found = 0;
+            while (check) {
+                if (check == buddy) {
+                    found = 1;
+                    break;
+                }
+                check = check->n;
+            }
+            if (!found)
+                break;
+
+            // remove buddy from its free list
             buddyRemove(buddy, order);
+            buddy->free = 0;
+
+            // choose lower address as merged block
             if (buddy < block)
                 block = buddy;
             order++;
