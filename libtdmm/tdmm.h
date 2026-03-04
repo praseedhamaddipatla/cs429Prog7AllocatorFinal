@@ -18,6 +18,11 @@ typedef struct sec {
     struct sec *p; // prev
 } sec;
 
+typedef struct {
+    void *start;
+    size_t size;
+} region;
+
 /**
  * Initializes the memory allocator with the given strategy.
  *

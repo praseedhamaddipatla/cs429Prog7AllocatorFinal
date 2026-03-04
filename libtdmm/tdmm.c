@@ -11,8 +11,12 @@
 #define MIN getpagesize()
 #define MAX_ORDER 30
 #define MIN_ORDER 12 // page size = min
+#define MAX_REGIONS 1024
 
-//buddy free list, organize by block size
+region regions[MAX_REGIONS];
+int regionCount = 0;
+
+// buddy free list, organize by block size
 sec *buddyLists[MAX_ORDER + 1];
 
 sec *frH = NULL;    // free head
@@ -214,13 +218,30 @@ void buddyRemove(sec *block, int order) {
     block->n = block->p = NULL;
 }
 
+region *findRegion(void *ptr) {
+    for (int i = 0; i < regionCount; i++) {
+        char *start = regions[i].start;
+        char *end = start + regions[i].size;
+        if ((char *)ptr >= start && (char *)ptr < end)
+            return &regions[i];
+    }
+    return NULL;
+}
+
 // find buddy address using XOR
-sec *getBuddy(sec *block, int order)
-{
+sec *getBuddy(sec *block, int order) {
+    region *r = findRegion(block);
+    if (!r)
+        return NULL;
+
     size_t blockSize = (size_t)1 << order;
-    size_t addr = (size_t)block;
-    size_t buddyAddr = addr ^ blockSize;
-    return (sec *)buddyAddr;
+    size_t offset = (char *)block - (char *)r->start;
+    size_t buddyOffset = offset ^ blockSize;
+
+    if (buddyOffset >= r->size)
+        return NULL;
+
+    return (sec *)((char *)r->start + buddyOffset);
 }
 
 sec *allocMoreBuddy(int order) {
@@ -234,11 +255,16 @@ sec *allocMoreBuddy(int order) {
         exit(1);
     }
 
-    sec *block = (sec *)newMem;
-    block->free = 0;
-    block->size = blockSize - sizeof(sec);
+    // register region
+    regions[regionCount].start = newMem;
+    regions[regionCount].size = blockSize;
+    regionCount++;
     totMap += blockSize;
+    sec *block = (sec *)newMem;
+    block->free = 1;
+    block->n = block->p = NULL;
 
+    buddyInsert(block, order);
     return block;
 }
 
@@ -311,7 +337,8 @@ sec *findBuddy(size_t size) {
         current++;
 
     if (current > MAX_ORDER) {
-        return allocMoreBuddy(order);
+        allocMoreBuddy(order);
+        return findBuddy(size);
     }
 
     sec *block = buddyLists[current];
@@ -505,8 +532,11 @@ void t_free(void *ptr) {
 
         while (order < MAX_ORDER) {
             sec *buddy = getBuddy(block, order);
-            if (!buddy || !buddy->free)
+            if (!buddy)
                 break;
+            if (!buddy->free)
+                break;
+
             buddyRemove(buddy, order);
             if (buddy < block)
                 block = buddy;
