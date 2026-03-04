@@ -363,9 +363,7 @@ sec *findBuddy(size_t size) {
 
 void split(sec *s, size_t aligned) {
     size_t total = sizeof(sec) + s->size + sizeof(size_t);
-
     size_t used = sizeof(sec) + aligned + sizeof(size_t);
-
     size_t remaining = total - used;
 
     if (remaining <= sizeof(sec) + sizeof(size_t) + 4)
@@ -517,68 +515,67 @@ sec *merge(sec *s) {
     return merged;
 }
 
+void buddyFree(void *ptr) {
+    sec *block = (sec *)ptr - 1;
+    detach(&allocH, block);
+    block->free = 1;
+
+    totAlloc -= block->size;
+    totOh -= sizeof(sec);
+    utilSum += (double)totAlloc / totMap;
+    utilCount++;
+
+    int order = MIN_ORDER;
+    while (order <= MAX_ORDER &&
+           ((size_t)1 << order) - sizeof(sec) != block->size)
+        order++;
+    if (order > MAX_ORDER) {
+        fprintf(stderr, "t_free: could not determine block order\n");
+        return;
+    }
+
+    while (order < MAX_ORDER) {
+        sec *buddy = getBuddy(block, order);
+        if (!buddy)
+            break;
+        if (!buddy->free)
+            break;
+        sec *check = buddyLists[order];
+        int found = 0;
+        while (check) {
+            if (check == buddy) {
+                found = 1;
+                break;
+            }
+            check = check->n;
+        }
+        if (!found)
+            break;
+        buddyRemove(buddy, order);
+        buddy->free = 0;
+
+        if (buddy < block)
+            block = buddy;
+        order++;
+        block->size = ((size_t)1 << order) - sizeof(sec);
+    }
+    buddyInsert(block, order);
+
+    region *r = findRegion(block);
+    if (r && (char *)block == r->start && ((size_t)1 << order) == r->size) {
+        buddyRemove(block, order);
+        totMap -= r->size;
+        munmap(r->start, r->size);
+        *r = regions[--regionCount];
+    }
+}
+
 void t_free(void *ptr) {
     if (!ptr)
         return;
 
     if (currPol == BUDDY) {
-        sec *block = (sec *)ptr - 1;
-        detach(&allocH, block);
-        block->free = 1;
-
-        totAlloc -= block->size;
-        totOh -= sizeof(sec);
-        utilSum += (double)totAlloc / totMap;
-        utilCount++;
-
-        int order = MIN_ORDER;
-        while (order <= MAX_ORDER &&
-               ((size_t)1 << order) - sizeof(sec) != block->size)
-            order++;
-        if (order > MAX_ORDER) {
-            fprintf(stderr, "t_free: could not determine block order\n");
-            return;
-        }
-
-        while (order < MAX_ORDER) {
-            sec *buddy = getBuddy(block, order);
-            if (!buddy)
-                break;
-            if (!buddy->free)
-                break;
-
-            sec *check = buddyLists[order];
-            int found = 0;
-            while (check) {
-                if (check == buddy) {
-                    found = 1;
-                    break;
-                }
-                check = check->n;
-            }
-            if (!found)
-                break;
-
-            buddyRemove(buddy, order);
-            buddy->free = 0;
-
-            if (buddy < block)
-                block = buddy;
-
-            order++;
-            block->size = ((size_t)1 << order) - sizeof(sec);
-        }
-
-        buddyInsert(block, order);
-
-        region *r = findRegion(block);
-        if (r && (char *)block == r->start && ((size_t)1 << order) == r->size) {
-            buddyRemove(block, order);
-            totMap -= r->size;
-            munmap(r->start, r->size);
-            *r = regions[--regionCount]; // swap-remove
-        }
-
+        buddyFree(ptr);
         return;
     }
     sec *block = (sec *)ptr - 1;
@@ -606,5 +603,4 @@ void t_free(void *ptr) {
     // find merged block
     insert(&frH, block);
     sec *merged = merge(block);
-    // printStats();
 }
