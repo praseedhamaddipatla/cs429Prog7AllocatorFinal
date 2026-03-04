@@ -540,16 +540,7 @@ void buddyFree(void *ptr) {
             break;
         if (!buddy->free)
             break;
-        sec *check = buddyLists[order];
-        int found = 0;
-        while (check) {
-            if (check == buddy) {
-                found = 1;
-                break;
-            }
-            check = check->n;
-        }
-        if (!found)
+        if (buddy->size != ((size_t)1 << order) - sizeof(sec))
             break;
         buddyRemove(buddy, order);
         buddy->free = 0;
