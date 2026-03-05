@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -152,17 +153,21 @@ static void runBench(const char *name, alloc_strat_e pol) {
 
 // utilization over time
 static void utilTest(const char *name, alloc_strat_e pol) {
-
     printf("\n===== %s =====\n", name);
-
     t_init(pol);
-
-    printf("Step,Event,Size,");
+    printf("Step, Event, Size,");
     printStats();
 
     void *ptrs[20] = {0};
+    size_t sizes[] = {4096, 300, 9000, 256, 17000, 1000, 2048, 700, 33000, 128};
 
-    size_t sizes[] = {4096, 512, 8192, 256, 16384, 1024, 2048, 512, 32768, 128};
+    // pre-fragment
+    void *pinA = t_malloc(18000);
+    void *pin  = t_malloc(512);   // pin to prevent merging
+    void *pinB = t_malloc(9500);
+    void *pin2 = t_malloc(512);   // pin to prevent merging
+    t_free(pinA);
+    t_free(pinB);
 
     for (int i = 0; i < 10; i++) {
 
@@ -182,13 +187,12 @@ static void utilTest(const char *name, alloc_strat_e pol) {
     }
 
     // random realloc pattern
+    size_t reallocSizes[] = {3000, 1500, 4500, 800, 2200};
+
     for (int i = 0; i < 10; i++) {
-
         if (!ptrs[i]) {
-
-            ptrs[i] = t_malloc(3000);
-
-            printf("%d,realloc,3000,", i);
+            ptrs[i] = t_malloc(reallocSizes[i % 5]);
+            printf("%d,realloc,%zu,", i, reallocSizes[i % 5]);
             printStats();
         }
     }
@@ -202,7 +206,7 @@ static void utilTest(const char *name, alloc_strat_e pol) {
 static void log_state(int step) {
     size_t aBlocks = getAllocCount();
     size_t fBlocks = getFrCount();
-    
+
     // based on structs
     size_t overheadPerBlock = sizeof(sec) + sizeof(size_t);
     size_t totalOverhead = (aBlocks + fBlocks) * overheadPerBlock;
@@ -215,30 +219,31 @@ void overheadTest(const char *name, alloc_strat_e policy) {
     printf("Step,AllocatedBlocks,FreeBlocks,TotalOverheadBytes\n");
 
     t_init(policy);
-    
+
     // Pointer array
     void *ptrs[200];
-    for(int i = 0; i < 200; i++) ptrs[i] = NULL;
-    
+    for (int i = 0; i < 200; i++)
+        ptrs[i] = NULL;
+
     int step = 0;
 
-    //phase 1: fragmentation holes
+    // phase 1: fragmentation holes
     for (int i = 0; i < 100; i++) {
         size_t size = (i % 5 + 1) * 128; // Sizes: 128, 256, 384, 512, 640
         ptrs[i] = t_malloc(size);
-        
+
         // Free every 2nd block to create holes that cannot merge
         if (i % 2 == 0 && i > 0) {
-            t_free(ptrs[i-1]);
-            ptrs[i-1] = NULL;
+            t_free(ptrs[i - 1]);
+            ptrs[i - 1] = NULL;
         }
         log_state(step++);
     }
 
-    //phase 2: stress zone
+    // phase 2: stress zone
     for (int i = 100; i < 200; i++) {
         size_t request = (i % 10 + 1) * 60; // request small pieces
-        
+
         int slot = i % 100;
         if (ptrs[slot] == NULL) {
             ptrs[slot] = t_malloc(request);
@@ -249,7 +254,7 @@ void overheadTest(const char *name, alloc_strat_e policy) {
         log_state(step++);
     }
 
-    //cleanup
+    // cleanup
     for (int i = 0; i < 200; i++) {
         if (ptrs[i]) {
             t_free(ptrs[i]);
@@ -264,20 +269,60 @@ void overheadTest(const char *name, alloc_strat_e policy) {
 
 // correctness tests
 static void correctnessTests() {
-
-    t_init(FIRST_FIT);
-
     printf("\n===== BASIC CORRECTNESS =====\n");
 
-    void *p = t_malloc(100);
+    alloc_strat_e policies[] = {FIRST_FIT, BEST_FIT, WORST_FIT, MIXED, BUDDY};
+    const char *names[] = {"FIRST_FIT", "BEST_FIT", "WORST_FIT", "MIXED",
+                           "BUDDY"};
 
-    printf("ptr valid: %s\n", p ? "YES" : "NO");
+    for (int p = 0; p < 5; p++) {
+        printf("\n--- %s ---\n", names[p]);
+        t_init(policies[p]);
 
-    memset(p, 0xAA, 100);
+        // 1. basic alloc and write
+        void *a = t_malloc(100);
+        printf("single alloc valid: %s\n", a ? "YES" : "NO");
+        if (a)
+            memset(a, 0xAA, 100);
 
-    t_free(p);
+        // 2. multiple live allocs
+        void *b = t_malloc(200);
+        void *c = t_malloc(50);
+        printf("multiple allocs valid: %s\n", (b && c) ? "YES" : "NO");
+        if (b)
+            memset(b, 0xBB, 200);
+        if (c)
+            memset(c, 0xCC, 50);
 
-    printStats();
+        // 3. free and realloc same size
+        t_free(a);
+        void *d = t_malloc(100);
+        printf("realloc after free valid: %s\n", d ? "YES" : "NO");
+        if (d)
+            memset(d, 0xDD, 100);
+
+        // 4. write pattern and verify no corruption on neighbors
+        unsigned char *buf = t_malloc(64);
+        if (buf) {
+            for (int i = 0; i < 64; i++)
+                buf[i] = (unsigned char)(i % 256);
+            int ok = 1;
+            for (int i = 0; i < 64; i++)
+                if (buf[i] != (unsigned char)(i % 256)) {
+                    ok = 0;
+                    break;
+                }
+            printf("write pattern intact: %s\n", ok ? "YES" : "NO");
+            t_free(buf);
+        }
+
+        // 5. free all and check heap returns to clean state
+        t_free(b);
+        t_free(c);
+        t_free(d);
+        printf("post-free stats: ");
+        printStats();
+    }
 }
 
 static void buddyBinaryStress() {
@@ -350,8 +395,6 @@ static void buddyMMFF() {
     printStats();
 }
 
-#include <stdlib.h>
-
 static void buddyRandomStress() {
     printf("\n===== BUDDY RANDOM STRESS =====\n");
 
@@ -391,19 +434,25 @@ int main() {
     buddyMMFF();
     buddyRandomStress();
 
-    /*correctnessTests();
+    correctnessTests();
 
     runBench("BENCH FIRST_FIT", FIRST_FIT);
     runBench("BENCH BEST_FIT", BEST_FIT);
     runBench("BENCH WORST_FIT", WORST_FIT);
+    runBench("BENCH MIXED", MIXED);
+    runBench("BENCH BUDDY", BUDDY);
 
     utilTest("UTIL FIRST_FIT", FIRST_FIT);
     utilTest("UTIL BEST_FIT", BEST_FIT);
     utilTest("UTIL WORST_FIT", WORST_FIT);
+    utilTest("UTIL MIXED", MIXED);
+    utilTest("UTIL BUDDY", BUDDY);
 
     overheadTest("OVERHEAD FIRST_FIT", FIRST_FIT);
     overheadTest("OVERHEAD BEST_FIT", BEST_FIT);
-    overheadTest("OVERHEAD WORST_FIT", WORST_FIT);*/
+    overheadTest("OVERHEAD WORST_FIT", WORST_FIT);
+    overheadTest("OVERHEAD MIXED", MIXED);
+    overheadTest("OVERHEAD BUDDY", BUDDY);
 
     return 0;
 }

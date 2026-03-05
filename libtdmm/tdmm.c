@@ -387,7 +387,8 @@ void split(sec *s, size_t aligned) {
 void printStats() {
     printf("Mapped: %zu\n", totMap);
     printf("Allocated: %zu\n", totAlloc);
-    printf("Utilization: %.2f%%\n", 100.0 * totAlloc / totMap);
+    if (totMap > 0)
+        printf("Utilization: %.2f%%\n", 100.0 * totAlloc / totMap);
     printf("Overhead: %zu\n", totOh);
     if (utilCount > 0)
         printf("Avg Utilization: %.4f%%\n", 100.0 * utilSum / utilCount);
@@ -433,8 +434,9 @@ void *t_malloc(size_t size) {
         found = findBuddy(aligned);
         if (!found)
             return NULL;
+        found->size = aligned;
         insert(&allocH, found);
-        totAlloc += found->size;
+        totAlloc += aligned + sizeof(sec);
         totOh += sizeof(sec);
         utilSum += (double)totAlloc / totMap;
         utilCount++;
@@ -467,7 +469,7 @@ void *t_malloc(size_t size) {
     setTag(found);
     insert(&allocH, found);
 
-    totAlloc += found->size;
+    totAlloc += found->size + sizeof(sec);
     totOh += sizeof(sec);
     utilSum += (double)totAlloc / totMap;
     utilCount++;
@@ -520,20 +522,19 @@ void buddyFree(void *ptr) {
     detach(&allocH, block);
     block->free = 1;
 
-    totAlloc -= block->size;
+    totAlloc -= block->size + sizeof(sec);
     totOh -= sizeof(sec);
     utilSum += (double)totAlloc / totMap;
     utilCount++;
 
-    int order = MIN_ORDER;
-    while (order <= MAX_ORDER &&
-           ((size_t)1 << order) - sizeof(sec) != block->size)
-        order++;
+    int order = orderSize(block->size);
+    block->size = ((size_t)1 << order) - sizeof(sec);
     if (order > MAX_ORDER) {
         fprintf(stderr, "t_free: could not determine block order\n");
         return;
     }
 
+    //merge recursively
     while (order < MAX_ORDER) {
         sec *buddy = getBuddy(block, order);
         if (!buddy)
@@ -551,14 +552,6 @@ void buddyFree(void *ptr) {
         block->size = ((size_t)1 << order) - sizeof(sec);
     }
     buddyInsert(block, order);
-
-    region *r = findRegion(block);
-    if (r && (char *)block == r->start && ((size_t)1 << order) == r->size) {
-        buddyRemove(block, order);
-        totMap -= r->size;
-        munmap(r->start, r->size);
-        *r = regions[--regionCount];
-    }
 }
 
 void t_free(void *ptr) {
@@ -583,10 +576,10 @@ void t_free(void *ptr) {
 
     // remove from alloc list
     detach(&allocH, block);
+    size_t requested = block->size; // saved request size
     block->free = 1;
-    setTag(block);
 
-    totAlloc -= block->size;
+    totAlloc -= requested + sizeof(sec);
     totOh -= sizeof(sec);
     utilSum += (double)totAlloc / totMap;
     utilCount++;
