@@ -384,6 +384,8 @@ void split(sec *s, size_t aligned) {
     insert(&frH, new);
 }
 
+//STATS FOR REPORT
+
 void printStats() {
     printf("Mapped: %zu\n", totMap);
     printf("Allocated: %zu\n", totAlloc);
@@ -407,6 +409,7 @@ size_t getAllocCount() {
 }
 
 size_t getFrCount() {
+    //check separate buddy list
     if (currPol == BUDDY) {
         size_t count = 0;
         for (int i = 0; i <= MAX_ORDER; i++) {
@@ -426,6 +429,8 @@ size_t getFrCount() {
     }
     return count;
 }
+
+//END OF STATS
 
 void *t_malloc(size_t size) {
     if (size == 0)
@@ -528,6 +533,7 @@ sec *merge(sec *s) {
     return merged;
 }
 
+//helper to separate free for buddy
 void buddyFree(void *ptr) {
     sec *block = (sec *)ptr - 1;
     detach(&allocH, block);
