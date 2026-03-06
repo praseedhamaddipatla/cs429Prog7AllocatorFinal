@@ -8,7 +8,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#define MIN getpagesize()
+#define MIN 4096
 #define MAX_ORDER 30
 #define MIN_ORDER 12 // page size = min
 #define MAX_REGIONS 65536
@@ -148,7 +148,7 @@ size_t align(size_t size) {
 }
 
 sec *allocMore(size_t size) {
-    size_t pgSize = getpagesize();
+    size_t pgSize = MIN;
     size_t needed = size + sizeof(sec) + sizeof(size_t);
     size_t reqSize = ((needed + pgSize - 1) / pgSize) * pgSize;
 
@@ -604,4 +604,5 @@ void t_free(void *ptr) {
     // find merged block
     insert(&frH, block);
     sec *merged = merge(block);
+    (void)merged;
 }
