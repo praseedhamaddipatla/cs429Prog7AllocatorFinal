@@ -407,6 +407,17 @@ size_t getAllocCount() {
 }
 
 size_t getFrCount() {
+    if (currPol == BUDDY) {
+        size_t count = 0;
+        for (int i = 0; i <= MAX_ORDER; i++) {
+            sec *curr = buddyLists[i];
+            while (curr) {
+                count++;
+                curr = curr->n;
+            }
+        }
+        return count;
+    }
     size_t count = 0;
     sec *curr = frH;
     while (curr) {
